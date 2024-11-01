@@ -19,6 +19,7 @@ import TSL2591
 import I2C_bus_device
 import struct
 import pros3
+import ugit
 from umqttsimple import MQTTClient
 
 try:
@@ -40,8 +41,8 @@ statusTopic = config["STATUSTOPIC"].format(config["TENANT"],UID.decode())
 
 client = MQTTClient(ubinascii.hexlify(machine.unique_id()), config["BROKER"], keepalive=240)
 
-fanEnabled = True
-
+#fanEnabled = True
+fanEnabled = False
 #set up display:
 
 #make a network connection
@@ -61,6 +62,7 @@ fanEnabled = True
 #temp bus 9 digital in
 #define pins
 fanControlPin = machine.Pin(37,machine.Pin.OUT)
+fanControlPin.value(0)
 
 waterSolenoidPin = machine.Pin(13,machine.Pin.OUT)
 
@@ -90,19 +92,57 @@ lowWaterSensorPin = machine.ADC(5)
 highWaterSensorPin = machine.ADC(3)
 #I2C bus for SCD40 and/or AHT10
 sensorBus = machine.I2C(0,scl=machine.Pin(9),sda=machine.Pin(8),freq=100000) #9,8
+
+#display:
+oledDisplay = ssd1306.SSD1306_I2C(128,32,sensorBus)
+oledDisplay.fill(0)
+oledDisplay.show()
+time.sleep(1)
+oledDisplay.text("Booting up...",0,0,1)
+oledDisplay.show()
+
+def displayStatus(messageType,message,*addText):
+    oledDisplay.fill(0)
+    oledDisplay.show()
+    time.sleep(1)
+    if messageType == "status":
+        #oledDisplay.fill(0)
+        #oledDisplay.show()
+        oledDisplay.text(messageType,0,0,1)
+        oledDisplay.text(message,0,10,1)
+        #oledDisplay.show()
+    elif messageType == "error":
+        oledDisplay.text(messageType,0,0,1)
+        oledDisplay.text(message,0,10,1)
+    elif messageType == "telem":
+        oledDisplay.text(messageType,0,0,1)
+        oledDisplay.text(message,0,10,1)
+    else:
+        oledDisplay.text(messageType,0,0,1)
+        oledDisplay.text(message,0,10,1)
     
+    oledDisplay.show()
     
-scd40CO2 = scd40.SCD4X(sensorBus)
-time.sleep(1)
-scd40CO2.start_periodic_measurement()
-time.sleep(1)
+    if addText:
+        for lineNum,line in enumerate(addText):
+            oledDisplay.text(line,0,(lineNum+2)*10,1)
+            oledDisplay.show()
+            
+            if len(line) < int(128/8):
+                #oledDisplay.show()
+                pass
+            else:
+                for i in range(len(line)%16):
+                    time.sleep(2)
+                    oledDisplay.scroll(16)
+                #oledDisplay.scroll()
+                
+    else:
+        pass
+    #oledDisplay.show()
+    return
 
-totalLuxSense = TSL2591.TSL2591(sensorBus)
-time.sleep(1)
-totalLuxSense.gain = TSL2591.GAIN_LOW
-
-time.sleep(1)
-
+displayStatus("status","WiFi Connecting")
 station = network.WLAN(network.STA_IF)
 station.active(True)
 time.sleep(1)
@@ -114,13 +154,46 @@ while not station.isconnected():
     time.sleep(1)
     if connAttempt > 10:
         print("wifi error")
+        displayStatus("error","wifi error")
         break
 
 time.sleep(1)
 if station.isconnected():
     print("wifi working")
-#display:
-oledDisplay = ssd1306.SSD1306_I2C(128,32,sensorBus)
+    displayStatus("status","WiFi connected",str(station.ifconfig()[0]))
+time.sleep(2)
+
+#check for update
+displayStatus("status","Checking for updates")
+try:
+    ugit.pull_all(isconnected = True)
+except Exception as error:
+    displayStatus("error","unable to check for updates")
+    
+
+
+try:
+    scd40CO2 = scd40.SCD4X(sensorBus)
+except Exception as error:
+    displayStatus("error","CO2 error")
+    time.sleep(1)
+    scd40CO2.start_periodic_measurement()
+else:
+    displayStatus("status","CO2 Good!")
+    
+time.sleep(1)
+
+try:
+    totalLuxSense = TSL2591.TSL2591(sensorBus)
+    time.sleep(1)
+    totalLuxSense.gain = TSL2591.GAIN_LOW
+except Exception as error:
+    displayStatus("error","Lux error")
+else:
+    displayStatus("status","Lux Good!")
+    
+time.sleep(1)
+
 
 def sub_cb(topic, msg):
   global config
@@ -130,6 +203,7 @@ def sub_cb(topic, msg):
   if topic.decode() == ccTopic:
     decodedMsg = json.loads(msg.decode())
     subject = decodedMsg.get("subject")
+    displayStatus("status","MQTT Incoming",subject)
     #print('Topic: ' + topic + 'Message: ' + msg)
     if subject == "returnSettings":
         '''
@@ -212,7 +286,7 @@ def sub_cb(topic, msg):
     elif subject == "checkForUpdate":
         try:
             print("call the updater")
-            import ugit
+            #import ugit
             try:
                 config["LASTUPDATECHECK"] = time.mktime(rtClock.datetime())
                 with open("config.json", 'w') as f:
@@ -229,7 +303,7 @@ def sub_cb(topic, msg):
     elif subject == "forceFileUpdate":
         print("manually update file: " + msg)
         try:
-            import ugit
+            #import ugit
             ugit.pull(msg)
         except Exception as error:
             #errorHandler("manual file update", error, traceback.print_stack())
@@ -237,28 +311,21 @@ def sub_cb(topic, msg):
         
     else:
         print('message recieved: ' + msg)
+        
 
 client.set_callback(sub_cb)
-client.connect()
+
+try:
+    client.connect()
+except Exception as error:
+    displayStatus("error","MQTT error")
+else:
+    displayStatus("status","MQTT Good!")
+
 
 client.subscribe(ccTopic)
 #Helper Functions:
-def displayStatus(messageType,message):
-    oledDisplay.fill(0)
-    oledDisplay.show()
-    if messageType == "status":
-        #oledDisplay.fill(0)
-        #oledDisplay.show()
-        oledDisplay.text(messageType,0,0,1)
-        oledDisplay.text(message,0,10,1)
-        #oledDisplay.show()
-    elif messageType == "error":
-        pass
-    elif messageType == "telem":
-        pass
-    else:
-        pass
-    oledDisplay.show()
+
     
 #setup the RTC
 NTP_DELTA = 3155673600 + 25200   #Adjust this for time zone
@@ -287,13 +354,16 @@ def set_time():
     t = time.gmtime(tm)
     rtClock.datetime((t[0],t[1],t[2],t[6]+1,t[3],t[4],t[5],0))
 
+ntpFail = False
 if station.isconnected():
     try:
         set_time()
     except Exception as error:
         print(error)
+        displayStatus("error","NTP fail",error)
     else:
         print("clock set")
+        displayStatus("status","NTP Good!")
 else:
     ntpFail = True
 
@@ -315,6 +385,8 @@ def statusHandler(source, statusType, message):
 
 def main():
     while True:
+        displayStatus("status","begin loop...")
+        
         phData = {"PH":0,
                   "TEMP":0}
         
@@ -361,6 +433,9 @@ def main():
             atmosphericData["SCD40"]["CO2"] = 0
             print(error)
             print("co2 fail")
+            displayStatus("error","CO2 fail")
+        else:
+            displayStatus("status",str(atmosphericData["SCD40"]["TEMP"]) + "C " + str(atmosphericData["SCD40"]["HUMIDITY"]) + "% " + str(atmosphericData["SCD40"]["CO2"]) + "ppm") 
 
 
         try:
@@ -375,32 +450,46 @@ def main():
             luxData["VIS"] = 0
             luxData["FULLSPEC"] = 0
             #errorHandler("lux reading", error, traceback.print_stack())
+            displayStatus("error","lux fail")
+        else:
+            displayStatus("status","Lux:  " + str(luxData["TOTAL"]))
         
         #get temp:
         try:
             tempProbeBus.convert_temp()
         except Exception as error:
-            statusHandler("temp probes","error","failed to initialize temp probe(s)")
+            statusHandler("temp probes","error","failed to read start probe(s)")
 
         else:
             time.sleep(1)
-            for i in probeTemps:
-                tempProbeValues.append(tempProbeBus.read_temp(i))
-            
-            for index, value in enumerate(tempProbeValues):
-                probeData[str(index)] = value
-            print(tempProbeValues)    
-        #for index,temp in enumerate(tempProbeValues)
+            try:
+                for i in probeTemps:
+                    tempProbeValues.append(tempProbeBus.read_temp(i))
+            except Exception as error:
+                statusHandler("temp probes","error","failed to read temp probes")
+            else:
+                for index, value in enumerate(tempProbeValues):
+                    probeData[str(index)] = value
+                print(tempProbeValues)
+                #displayStatus("status",str(probeData.items()[0][]) + " " + str(probeData.items()[1][]), str(probeData.items()[2][]) + " " + str(probeData.items()[3][]))
+                displayStatus("status",str(probeData))
+   
+           #for index,temp in enumerate(tempProbeValues)
         #    tempProbeData[index] = temp
+        time.sleep(2)
         
         #get pH:
         tdsProbePowerPin.value(0)
         phProbePowerPin.value(1)
+        time.sleep(5)
+        displayStatus("status","warming up pH probe")
         time.sleep(15)
+        
         phData["PH"] = phProbeDataPin.read_uv() * 3.3 / 1000000
         #change this to read ph temp probe
         phData["TEMP"] = 0
-        time.sleep(1)
+        displayStatus("status","pH: " + str(phData["PH"]),"Temp: " + str(phData["TEMP"]))
+        time.sleep(2)
         print(phData["PH"])
         phProbePowerPin.value(0)
         time.sleep(1)
@@ -410,11 +499,13 @@ def main():
             #switch off pH probe
             
         #get EC/TDS:
+        displayStatus("status","warming up TDS probe")
         tdsProbePowerPin.value(1)
-        time.sleep(15)
+        time.sleep(20)
         tdsData["TDS"] = tdsProbeDataPin.read_uv() * 3.3 / 1000000
         tdsData["EC"] = 0  #calculated value
         time.sleep(1)
+        displayStatus("status","TDS: " + str(tdsData["TDS"]), "EC: " + str(tdsData["EC"]))
         tdsProbePowerPin.value(0)
         time.sleep(1)
             #make sure pH probe is switched off
@@ -430,6 +521,8 @@ def main():
         #highWater = highWaterSensorPin.value()
         lowWater = lowWaterSensorPin.read_uv() *3.3 / 1000000
         highWater = highWaterSensorPin.read_uv() *3.3 / 1000000
+        
+        displayStatus("status","Low Water: " + str(lowWater) + " V","High Water: " + str(highWater) + " V")
         #interrupts for low water sensor, AC control, and dosing
             
         #if dosePumpControlEnabled:
@@ -452,14 +545,33 @@ def main():
                            }
         except Exception as error:
             print(error)
+            displayStatus("error","payload malformed",error)
         
         print(json.dumps(mqttPayload))
-        displayStatus("status","Running...")
+        displayStatus("status","Transmitting...")
+        time.sleep(1)
+        
         try:
             client.publish(telemTopic, json.dumps(mqttPayload).encode())
         except Exception as error:
             print("mqtt error")
-            
+            displayStatus("error","MQTT send fail",error)
+        else:
+            displayStatus("status","Transmission successful")
+        
+        time.sleep(2)
+        
+        displayStatus("status","Checking for MQTT messages")
+        
+        try:
+            client.check_msg()
+        except Exception as error:
+            displayStatus("error","MQTT check msg fail",error)
+        
+        if fanEnabled:
+            fanControlPin.value(1)
+        else:
+            fanControlPin.value(0)
         time.sleep(10)
         
 main()  
