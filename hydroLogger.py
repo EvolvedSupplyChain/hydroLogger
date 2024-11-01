@@ -174,10 +174,10 @@ except Exception as error:
 
 try:
     scd40CO2 = scd40.SCD4X(sensorBus)
-except Exception as error:
-    displayStatus("error","CO2 error")
     time.sleep(1)
     scd40CO2.start_periodic_measurement()
+except Exception as error:
+    displayStatus("error","CO2 error")
 else:
     displayStatus("status","CO2 Good!")
     
